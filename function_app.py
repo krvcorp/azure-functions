@@ -2,8 +2,11 @@ import azure.functions as func
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
-@app.route(route="http_trigger")
-def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
+@app.function_name(name="outlookchecker")
+@app.schedule(schedule="0 */1 * * * *", 
+              arg_name="mytimer",
+              run_on_startup=True) 
+def http_trigger(mytimer: func.TimerRequest) -> None:
     import logging
     logging.info('Python HTTP trigger function processed a request.')
     outlook_state = get_backend("users/get-outlook-token", {}, {})['outlook_state']
@@ -12,8 +15,8 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
 
     print(emails_to_return)
 
-    return func.HttpResponse(f"Hello. This HTTP triggered function executed successfully.",
-             status_code=200)
+    # return func.HttpResponse(f"Hello. This HTTP triggered function executed successfully.",
+    #          status_code=200)
 
 def outlook_steps(oauth_token, last_email_indexed):
     # Send a request to microsoft graph API, to get the last 10 emails
