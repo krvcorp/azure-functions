@@ -457,7 +457,6 @@ def split_data(cleaned_json, max_pages=3):
     ):
         chunks.append(current_chunk)
 
-    print(f"Number of chunks: {len(chunks)}")
     return chunks
 
 
