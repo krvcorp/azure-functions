@@ -167,6 +167,7 @@ def run_trigger(msg: func.QueueMessage) -> None:
         file_path = uploaded_file_object["path"]
 
         result, tokens_used = extraction(file_path, automation_fields)
+
         for automation_field in automation_fields:
             if automation_field["field_type"] == "list":
                 handle_line_items(result, automation_job, automation_field)
