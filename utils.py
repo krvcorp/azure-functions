@@ -477,6 +477,7 @@ def process_chunk(chunk, automation_fields):
 
     chat_instance = ChatReadRetrieveReadApproach()
     desired_fields = []
+    desired_fields_descriptions = []
     chunk_data = {}
 
     total_tokens_used = 0
@@ -485,7 +486,7 @@ def process_chunk(chunk, automation_fields):
         if automation_field["field_type"] == "list":
             sub_fields = automation_field["field_description"].split(", ")
             result, tokens_used = chat_instance.extract(
-                chunk, sub_fields, line_items=True
+                chunk, sub_fields, desired_fields_descriptions=[], line_items=True
             )
             result_data = json.loads(result)
             total_tokens_used += tokens_used
@@ -500,11 +501,15 @@ def process_chunk(chunk, automation_fields):
 
         else:
             desired_fields.append(automation_field["field_name"])
+            desired_fields_descriptions.append(automation_field["field_description"])
 
     # If there are non-list fields to extract, process them separately
     if desired_fields:
         result, tokens_used = chat_instance.extract(
-            chunk, desired_fields, line_items=False
+            chunk,
+            desired_fields,
+            desired_fields_descriptions=desired_fields_descriptions,
+            line_items=False,
         )
         result_data = json.loads(result)
         total_tokens_used += tokens_used
@@ -520,7 +525,7 @@ def combine_all_chunks(chunks, automation_fields):
     field_values = {
         field["field_name"]: []
         for field in automation_fields
-        if field["field_name"] != "list"
+        if field["field_type"] != "list"
     }
 
     # Initialize non-list fields with empty values
@@ -619,13 +624,16 @@ class ChatReadRetrieveReadApproach:
     Examine the JSON document and return all requested fields. Use empty strings for fields that cannot be extracted. Respond only in JSON.
     """
 
-    def extract(self, document, desired_fields, line_items=False):
+    def extract(
+        self, document, desired_fields, desired_fields_descriptions=[], line_items=False
+    ):
         """
         Receive a JSON document and extract the information of the desired_fields and return in a JSON format.
 
         Parameters:
         - document (str): The JSON document to extract information from.
         - desired_fields (list): A list of fields to extract from the document.
+        - desired_fields_descriptions (list, optional): A list of descriptions for the desired fields. Defaults to [].
         - line_items (bool, optional): Whether to return the line items as an array with the key value 'LineItems'. Defaults to False.
 
         Returns:
@@ -644,7 +652,7 @@ class ChatReadRetrieveReadApproach:
         messages = []
 
         line_items_prompt = (
-            "The features are columns for an array named 'LineItems', which is the value of the key 'LineItems'."
+            "The features are columns for an array named 'LineItems'. These dictionary values should fill an array for the 'LineItems' key, which must be returned."
             if line_items
             else ""
         )
@@ -656,11 +664,27 @@ class ChatReadRetrieveReadApproach:
             }
         )
 
+        if desired_fields_descriptions and len(desired_fields_descriptions) == len(
+            desired_fields
+        ):
+            fields_with_descriptions = [
+                f"{field}: {description}"
+                for field, description in zip(
+                    desired_fields, desired_fields_descriptions
+                )
+            ]
+            header = "Fields and Descriptions"
+        else:
+            fields_with_descriptions = desired_fields
+            header = "Fields"
+
         fields_content = (
             'Document content:\n\n"""'
             + json.dumps(document, indent=4)
-            + '"""\n\nFields:\n\n"""'
-            + ", ".join(desired_fields)
+            + '"""\n\n'
+            + header
+            + ':\n\n"""'
+            + "\n".join(fields_with_descriptions)
             + '"""\n\n'
             + self.system_message_extract
         )
