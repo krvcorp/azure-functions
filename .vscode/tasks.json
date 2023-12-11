@@ -5,13 +5,7 @@
             "label": "func: host start",
             "type": "shell",
             "osx": {
-                "command": "source venv/bin/activate && func host start"
-            },
-            "windows": {
-                "command": "venv\\Scripts\\activate && func host start"
-            },
-            "linux": {
-                "command": "source venv/bin/activate && func host start"
+                "command": "source venv/bin/activate && ./start-func-host.sh"
             },
             "isBackground": true,
             "presentation": {

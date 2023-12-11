@@ -166,20 +166,36 @@ def run_trigger(msg: func.QueueMessage) -> None:
     ):
         file_path = uploaded_file_object["path"]
 
-        result, tokens_used = extraction(file_path, automation_fields)
+        try:
+            result, tokens_used = extraction(file_path, automation_fields)
 
-        for automation_field in automation_fields:
-            if automation_field["field_type"] == "list":
-                handle_line_items(result, automation_job, automation_field)
+            for automation_field in automation_fields:
+                if automation_field["field_type"] == "list":
+                    handle_line_items(result, automation_job, automation_field)
+                else:
+                    handle_single_field(result, automation_job, automation_field)
+
+            post_backend(
+                "azureoperations/update-automation-job/",
+                {},
+                {
+                    "automation_job_id": automation_job["id"],
+                    "status": "completed",
+                    "tokens_used": tokens_used,
+                },
+            )
+        except Exception as e:
+            if "429" in str(e):  # Check for rate limit error
+                # Update the automation job status to indicate a rate limit issue
+                post_backend(
+                    "azureoperations/update-automation-job/",
+                    {},
+                    {
+                        "automation_job_id": automation_job["id"],
+                        "status": "openai_ratelimit",
+                        "error_message": str(e),
+                    },
+                )
             else:
-                handle_single_field(result, automation_job, automation_field)
-
-        post_backend(
-            "azureoperations/update-automation-job/",
-            {},
-            {
-                "automation_job_id": automation_job["id"],
-                "status": "completed",
-                "tokens_used": tokens_used,
-            },
-        )
+                # Handle other exceptions here
+                pass

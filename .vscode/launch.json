@@ -7,6 +7,6 @@
             "request": "attach",
             "port": 7071,
             "preLaunchTask": "func: host start"
-        },
+        }
     ]
 }
