@@ -482,10 +482,21 @@ def process_chunk(chunk, automation_fields):
     total_tokens_used = 0
 
     for automation_field in automation_fields:
-        if automation_field["field_type"] == "list":
-            sub_fields = automation_field["field_description"].split(", ")
+        if (
+            automation_field["field_type"] == "list"
+            and "sub_fields" in automation_field
+        ):
+            # Process each subfield within the list
+            sub_fields = [sf["field_name"] for sf in automation_field["sub_fields"]]
+            sub_fields_descriptions = [
+                sf["field_description"] for sf in automation_field["sub_fields"]
+            ]
+
             result, tokens_used = chat_instance.extract(
-                chunk, sub_fields, desired_fields_descriptions=[], line_items=True
+                chunk,
+                sub_fields,
+                desired_fields_descriptions=sub_fields_descriptions,
+                line_items=True,
             )
             result_data = json.loads(result)
             total_tokens_used += tokens_used
@@ -520,28 +531,33 @@ def process_chunk(chunk, automation_fields):
 
 
 def combine_all_chunks(chunks, automation_fields):
-    combined_data = {"LineItems": []}
+    combined_data = {}
+
+    # Initialize fields with default values based on their type
+    for field in automation_fields:
+        if field["field_type"] == "list":
+            combined_data[field["field_name"]] = []
+        else:
+            combined_data[field["field_name"]] = ""
+
+    # Initialize a structure to hold non-list field values for each field
     field_values = {
         field["field_name"]: []
         for field in automation_fields
         if field["field_type"] != "list"
     }
 
-    # Initialize non-list fields with empty values
-    for field in automation_fields:
-        if field["field_type"] != "list":
-            combined_data[field["field_name"]] = ""
-
     # Process each chunk
     for chunk in chunks:
         for key, values in chunk.items():
-            if key == "LineItems":
-                # Extend the list of line items
-                combined_data[key].extend(values)
-            else:
-                # Collect values for non-list fields for later processing
-                if values:  # Ignore empty values
-                    field_values[key].append(values)
+            if key in combined_data and key != "LineItems":
+                if isinstance(combined_data[key], list):
+                    # Extend the list of items (for list fields other than LineItems)
+                    combined_data[key].extend(values)
+                else:
+                    # Collect values for non-list fields for later processing
+                    if values:  # Ignore empty values
+                        field_values[key].append(values)
 
     # Resolve contradictions in non-list fields
     for key, values in field_values.items():
@@ -549,25 +565,15 @@ def combine_all_chunks(chunks, automation_fields):
             # Select the most frequent non-empty value
             most_frequent_value = max(set(values), key=values.count)
             combined_data[key] = most_frequent_value
-        else:
-            combined_data[key] = ""
 
-    # Check if LineItems are effectively empty (all keys have empty values)
-    if all(
-        not any(value.strip() for value in item.values())
-        for item in combined_data["LineItems"]
-    ):
-        sub_fields = [
-            field["field_description"].split(", ")
-            for field in automation_fields
-            if field["field_type"] == "list"
-        ][0]
-        empty_line_item = {sub_field: "" for sub_field in sub_fields}
-        combined_data["LineItems"] = [
-            empty_line_item
-        ]  # Replace LineItems with a single empty item
-    else:
-        # Filter out completely empty rows from LineItems
+    # Process LineItems separately to ensure it's last
+    for chunk in chunks:
+        for key, values in chunk.items():
+            if key == "LineItems":
+                combined_data[key].extend(values)
+
+    # Filter out completely empty rows from LineItems
+    if "LineItems" in combined_data and isinstance(combined_data["LineItems"], list):
         combined_data["LineItems"] = [
             item
             for item in combined_data["LineItems"]
@@ -619,8 +625,17 @@ class ChatReadRetrieveReadApproach:
                 return query_text
         return user_query
 
-    system_message_extract = """You are an information extraction assistant. You are given a JSON document from Azure Document Intelligence API. You are also given a list of fields a user requests. 
-    Examine the JSON document and return all requested fields. Use empty strings for fields that cannot be extracted. Respond only in JSON.
+    system_message_extract = """
+    You are a sophisticated data extraction assistant specializing in processing JSON documents received from the Azure Document Intelligence API. Your task involves the following steps:
+
+    1. Analyze the provided JSON document carefully.
+    2. Identify and extract data corresponding to a predefined list of user-requested fields. These fields are specified along with their descriptions, which may include variations and specific formatting requirements.
+    3. Respect the order of the fields as provided in the user request. This order is crucial for the correct organization of the extracted data.
+    4. For each field, apply any specified formatting rules diligently. This may include date formats (e.g., MM/DD/YYYY), numerical representations (e.g., decimal places), and specific text patterns.
+    5. If a particular field's data cannot be found in the JSON document, respond with an empty string for that field to maintain the structure of the output.
+    6. Compile the extracted data and present it in a structured JSON format, adhering to the sequence of the requested fields.
+
+    Your response must be exclusively in JSON format, ensuring it is precise, well-structured, and aligns with the user's extraction and formatting criteria. Focus on accuracy and clarity in the representation of the extracted data.
     """
 
     def extract(
@@ -633,12 +648,39 @@ class ChatReadRetrieveReadApproach:
         - document (str): The JSON document to extract information from.
         - desired_fields (list): A list of fields to extract from the document.
         - desired_fields_descriptions (list, optional): A list of descriptions for the desired fields. Defaults to [].
-        - line_items (bool, optional): Whether to return the line items as an array with the key value 'LineItems'. Defaults to False.
+        - line_items (bool, optional): Whether the desired fields are line items. Defaults to False.
 
         Returns:
         - str: The extracted information in a JSON format.
         - tokens_used (int): The number of tokens used to generate the response.
         """
+
+        # Additional instruction for line items, added only if descriptions are provided
+        line_items_instruction = (
+            "\n7. The features are columns for an array named 'LineItems'. "
+            "These dictionary values must fill an array for the 'LineItems' key, which must be returned."
+            if line_items
+            else ""
+        )
+
+        # Construct the system message extract with the conditional instruction
+        system_message_extract = (
+            """
+            You are a sophisticated data extraction assistant specializing in processing JSON documents received from the Azure Document Intelligence API. You are also given a list of fields a user requests. Your task involves the following steps:
+
+            1. You will the JSON document and return all requested fields.
+            2. You will identify and extract data corresponding to the provided user-requested fields. These fields are specified along with their descriptions, which will include variations and specific formatting requirements.
+            3. You will respect the order of the fields as provided in the user request. This order is crucial for the correct organization of the extracted data.
+            4. You will apply any specified formatting rules diligently. This includes date formats (e.g., MM/DD/YYYY), numerical representations (e.g., decimal places), and specific text patterns.
+            5. You will use empty strings for fields that cannot be extracted.
+            6. You will compile the extracted data and present it in a structured JSON format, adhering to the sequence of the requested fields."""
+            + line_items_instruction
+            + """
+
+            Your response must be exclusively in JSON format.
+            """
+        )
+
         import json
         import openai
         import os
@@ -650,40 +692,30 @@ class ChatReadRetrieveReadApproach:
 
         messages = []
 
-        line_items_prompt = (
-            "The features are columns for an array named 'LineItems'. These dictionary values should fill an array for the 'LineItems' key, which must be returned."
-            if line_items
-            else ""
-        )
-
         messages.append(
             {
                 "role": self.SYSTEM,
-                "content": f"{self.system_message_extract} {line_items_prompt}",
+                "content": f"{system_message_extract}",
             }
         )
 
-        if desired_fields_descriptions and len(desired_fields_descriptions) == len(
-            desired_fields
-        ):
-            fields_with_descriptions = [
-                f"{field}: {description}"
-                for field, description in zip(
-                    desired_fields, desired_fields_descriptions
-                )
-            ]
-            header = "Fields and Descriptions"
-        else:
-            fields_with_descriptions = desired_fields
-            header = "Fields"
+        fields_with_descriptions = [
+            f"{field}: {description}"
+            for field, description in zip(desired_fields, desired_fields_descriptions)
+        ]
+
+        logging.info(f"Fields with descriptions: {fields_with_descriptions}")
+
+        # Adding an additional newline between each field and its description
+        fields_descriptions_joined = "\n\n".join(fields_with_descriptions)
 
         fields_content = (
             'Document content:\n\n"""'
             + json.dumps(document, indent=4)
             + '"""\n\n'
-            + header
+            + "Fields and Descriptions"
             + ':\n\n"""'
-            + "\n".join(fields_with_descriptions)
+            + fields_descriptions_joined  # Using the modified joined string
             + '"""\n\n'
             + self.system_message_extract
         )
