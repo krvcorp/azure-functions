@@ -285,34 +285,62 @@ def clean_azure_response(raw_response):
         return cleaned_documents
 
     def process_tables(tables):
-        cleaned_tables = []
-        for table in tables:
-            cleaned_cells = []
-            for cell in table.get("cells", []):
-                page_number = (
-                    cell.get("boundingRegions", [])[0].get("pageNumber", 0)
-                    if cell.get("boundingRegions")
-                    else 0
-                )
+        """
+        Process a list of tables and convert them to markdown format.
 
-                cleaned_cells.append(
-                    {
-                        "kind": cell.get("kind"),
-                        "rowIndex": cell.get("rowIndex"),
-                        "columnIndex": cell.get("columnIndex"),
-                        "content": cell.get("content"),
-                        "page_number": page_number,
-                    }
-                )
+        Args:
+            tables (list): A list of tables to be processed.
 
-            cleaned_tables.append(
-                {
-                    "rowCount": table.get("rowCount"),
-                    "columnCount": table.get("columnCount"),
-                    "cells": cleaned_cells,
-                }
-            )
-        return cleaned_tables
+        Returns:
+            list: A list of dictionaries containing the markdown table and the page numbers on which the table appears.
+        """
+
+        def create_markdown_table(table):
+            """
+            Convert table data to markdown format.
+            """
+            table_dict = {}
+            for cell in table["cells"]:
+                row_index = cell["rowIndex"]
+                col_index = cell["columnIndex"]
+                content = cell["content"]
+                if row_index not in table_dict:
+                    table_dict[row_index] = {}
+                table_dict[row_index][col_index] = content
+
+            markdown_table = ""
+            max_col = max(max(table_dict[row].keys()) for row in table_dict) + 1
+            for row in sorted(table_dict.keys()):
+                row_data = (
+                    "| "
+                    + " | ".join(table_dict[row].get(col, "") for col in range(max_col))
+                    + " |"
+                )
+                markdown_table += row_data + "\n"
+                if row == 0:
+                    header_separator = (
+                        "| " + " | ".join("---" for _ in range(max_col)) + " |"
+                    )
+                    markdown_table += header_separator + "\n"
+
+            return markdown_table
+
+        def create_markdown_and_extract_pages(table):
+            """
+            Convert table data to markdown and extract the page numbers on which the table appears.
+            """
+            page_numbers = set()
+            for cell in table["cells"]:
+                for region in cell.get("boundingRegions", []):
+                    page_numbers.add(region.get("pageNumber", 0))
+
+            markdown_table = create_markdown_table(table)
+            return {
+                "markdown_table": markdown_table,
+                "page_numbers": sorted(list(page_numbers)),
+            }
+
+        return [create_markdown_and_extract_pages(table) for table in tables]
 
     def process_pages(pages):
         page_contents = {}
@@ -420,19 +448,11 @@ def split_data(cleaned_json, max_pages=3):
     for page_num, page_content in cleaned_json["analyzeResult"]["pages"].items():
         # Append page content to the chunk
         current_chunk["analyzeResult"]["content"] += page_content["content"] + " "
-        current_page_count += 1
 
         # Process tables for this page
-        added_tables = set()
-
         for table in cleaned_json["analyzeResult"]["tables"]:
-            table_id = id(table)
-            if (
-                any(cell["page_number"] == page_num for cell in table["cells"])
-                and table_id not in added_tables
-            ):
+            if page_num in table["page_numbers"]:
                 current_chunk["analyzeResult"]["tables"].append(table)
-                added_tables.add(table_id)
 
         # Process documents for this page
         for document in cleaned_json["analyzeResult"]["documents"]:
@@ -628,7 +648,7 @@ class ChatReadRetrieveReadApproach:
     system_message_extract = """
     You are a sophisticated data extraction assistant specializing in processing JSON documents received from the Azure Document Intelligence API. Your task involves the following steps:
 
-    1. Analyze the provided JSON document carefully.
+    1. Analyze the provided JSON document carefully. Tables of information are provided in markdown format.
     2. Identify and extract data corresponding to a predefined list of user-requested fields. These fields are specified along with their descriptions, which may include variations and specific formatting requirements.
     3. Respect the order of the fields as provided in the user request. This order is crucial for the correct organization of the extracted data.
     4. For each field, apply any specified formatting rules diligently. This may include date formats (e.g., MM/DD/YYYY), numerical representations (e.g., decimal places), and specific text patterns.
