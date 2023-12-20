@@ -239,7 +239,7 @@ def extraction(file_url, automation_fields):
                         all_chunks_data, automation_fields
                     )
 
-                    return final_result, total_tokens_used, cleaned_json
+                    return final_result, total_tokens_used, cleaned_json, result_data
 
                 elif result_response.status_code not in [200, 202]:
                     raise Exception(
