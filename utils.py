@@ -29,14 +29,13 @@ def post_backend(url, headers, data):
     headers["X-Azure-Token"] = os.environ["AUTH_KEY"]
 
     response = requests.post(
-        os.environ["BACKEND_URL"] + url, headers=headers, data=data
+        os.environ["BACKEND_URL"] + url, headers=headers, json=data
     )
     response.raise_for_status()
 
-    # check if the response has any json data, and if it doesnt, return an empty dict
     try:
         return response.json()
-    except:
+    except ValueError:
         return {}
 
 
@@ -133,6 +132,7 @@ def extraction(file_url, automation_fields):
     Returns:
         list: A list of dictionaries containing the extracted data.
         total_tokens_used (int): The total number of tokens used to perform the extraction
+        cleaned_json (dict): The cleaned JSON response from Azure Document Intelligence.
 
     Raises:
         Exception: If there is an error during the extraction process.
@@ -239,7 +239,7 @@ def extraction(file_url, automation_fields):
                         all_chunks_data, automation_fields
                     )
 
-                    return final_result, total_tokens_used
+                    return final_result, total_tokens_used, cleaned_json
 
                 elif result_response.status_code not in [200, 202]:
                     raise Exception(
@@ -688,7 +688,7 @@ class ChatReadRetrieveReadApproach:
             """
             You are a sophisticated data extraction assistant specializing in processing JSON documents received from the Azure Document Intelligence API. You are also given a list of fields a user requests. Your task involves the following steps:
 
-            1. You will the JSON document and return all requested fields.
+            1. You will examine the JSON document and return all requested fields.
             2. You will identify and extract data corresponding to the provided user-requested fields. These fields are specified along with their descriptions, which will include variations and specific formatting requirements.
             3. You will respect the order of the fields as provided in the user request. This order is crucial for the correct organization of the extracted data.
             4. You will apply any specified formatting rules diligently. This includes date formats (e.g., MM/DD/YYYY), numerical representations (e.g., decimal places), and specific text patterns.
@@ -723,8 +723,6 @@ class ChatReadRetrieveReadApproach:
             f"{field}: {description}"
             for field, description in zip(desired_fields, desired_fields_descriptions)
         ]
-
-        logging.info(f"Fields with descriptions: {fields_with_descriptions}")
 
         # Adding an additional newline between each field and its description
         fields_descriptions_joined = "\n\n".join(fields_with_descriptions)

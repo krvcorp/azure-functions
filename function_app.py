@@ -167,7 +167,7 @@ def run_trigger(msg: func.QueueMessage) -> None:
         file_path = uploaded_file_object["path"]
 
         try:
-            result, tokens_used = extraction(file_path, automation_fields)
+            result, tokens_used, cleaned_json = extraction(file_path, automation_fields)
 
             for automation_field in automation_fields:
                 if automation_field["field_type"] == "list":
@@ -182,6 +182,7 @@ def run_trigger(msg: func.QueueMessage) -> None:
                     "automation_job_id": automation_job["id"],
                     "status": "completed",
                     "tokens_used": tokens_used,
+                    "cleaned_json": cleaned_json,
                 },
             )
         except Exception as e:
