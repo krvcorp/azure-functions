@@ -429,40 +429,40 @@ def handle_single_field(extraction_result, automation_job, automation_field):
     )
 
 
+def delete_line_items(automation_job):
+    result = post_backend(
+        "azureoperations/delete-line-items/",
+        {},
+        {
+            "automation_job_id": automation_job["id"],
+        },
+    )
+
+    return result
+
+
 def split_data(cleaned_json, max_pages=3):
-    """
-    Splits the data into chunks, each chunk containing data from up to max_pages.
-
-    Args:
-        cleaned_json (dict): The JSON data to be chunked.
-        max_pages (int): The maximum number of pages for each chunk.
-
-    Returns:
-        list: A list of chunks, each chunk being a dictionary.
-    """
     chunks = []
     current_chunk = {"analyzeResult": {"content": "", "tables": [], "documents": []}}
     current_page_count = 0
 
-    # Iterate through pages and gather associated tables and documents
     for page_num, page_content in cleaned_json["analyzeResult"]["pages"].items():
-        # Append page content to the chunk
         current_chunk["analyzeResult"]["content"] += page_content["content"] + " "
+        current_page_count += 1  # Increment page count
 
-        # Process tables for this page
         for table in cleaned_json["analyzeResult"]["tables"]:
-            if page_num in table["page_numbers"]:
+            if int(page_num) in table["page_numbers"]:
                 current_chunk["analyzeResult"]["tables"].append(table)
 
-        # Process documents for this page
-        for document in cleaned_json["analyzeResult"]["documents"]:
+        # Assuming documents are structured in a specific way
+        # Modify this part according to your actual data structure
+        for document in cleaned_json.get("analyzeResult", {}).get("documents", []):
             for field_name, field_info in document.items():
-                if field_info.get("pageNumber", 0) == page_num:
+                if field_info.get("pageNumber", 0) == int(page_num):
                     current_chunk["analyzeResult"]["documents"].append(
                         {field_name: field_info}
                     )
 
-        # Check if max pages limit is reached and reset for a new chunk
         if current_page_count >= max_pages:
             chunks.append(current_chunk)
             current_chunk = {
@@ -470,10 +470,9 @@ def split_data(cleaned_json, max_pages=3):
             }
             current_page_count = 0
 
-    # Add any remaining data to the last chunk
     if (
-        current_chunk["analyzeResult"]["tables"]
-        or current_chunk["analyzeResult"]["documents"]
+        current_chunk["analyzeResult"]["content"]
+        or current_chunk["analyzeResult"]["tables"]
     ):
         chunks.append(current_chunk)
 
@@ -755,6 +754,71 @@ class ChatReadRetrieveReadApproach:
 
         return result, tokens_used
 
+    def fix_tables(self, document, markdown_line_items):
+        """
+        Receive a JSON document and fix the tables in the document.
+
+        Parameters:
+        - document (str): The JSON document to fix tables in.
+        - markdown_line_items (str): The markdown table of the well formed / fixed_rows
+
+        Returns:
+        - str: The fixed tables in a JSON format.
+        - tokens_used (int): The number of tokens used to generate the response.
+        """
+
+        system_message_fix_tables = """
+        You are a sophisticated data extraction assistant.
+        You are provided a JSON document with tables in markdown format. The cells are separated by a pipe (|) and the rows are separated by a new line.
+        However, some of the tables are not well formed. Errors include cells being merged, rows being merged, and cells being split.
+        You are provided a sample markdown table with 2 well formed rows. Your task is to fix all of the tables in the JSON document.
+        Use only the headers from the provided markdown table in the new tables
+        Return a JSON document with only the key 'tables' and only the value being an array of tables in the original JSON format.
+        """
+
+        import json
+        import openai
+        import os
+
+        openai.api_key = os.environ["AZURE_OPENAI_API_KEY"]
+        openai.api_base = os.environ["AZURE_OPENAI_ENDPOINT"]
+        openai.api_type = "azure"
+        openai.api_version = "2023-05-15"
+
+        messages = []
+
+        messages.append(
+            {
+                "role": self.SYSTEM,
+                "content": f"{system_message_fix_tables}",
+            }
+        )
+
+        fields_content = (
+            'Document content:\n\n"""'
+            + json.dumps(document, indent=4)
+            + '"""\n\n'
+            + "Fixed Rows"
+            + ':\n\n"""'
+            + markdown_line_items
+            + '"""\n\n'
+            + system_message_fix_tables
+        )
+
+        messages.append({"role": self.USER, "content": fields_content})
+
+        chat_completion = openai.ChatCompletion.create(
+            engine=self.chatgpt_model,
+            response_format={"type": "json_object"},
+            messages=messages,
+            max_tokens=self.chatgpt_token_limit,
+            temperature=0.0,
+        )
+
+        result = chat_completion.choices[0].message["content"].strip()
+
+        return result
+
 
 def num_tokens_from_messages(messages, model="gpt-4"):
     """
@@ -806,3 +870,111 @@ def num_tokens_from_messages(messages, model="gpt-4"):
                 num_tokens += tokens_per_name
     num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
     return num_tokens
+
+
+def fix_table_helper(line_items, automation_job, automation_fields):
+    """
+    Helper function to fix the tables in the document.
+
+    Args:
+        line_items (list): The line items to be fixed.
+        automation_job (AutomationJob): The automation job object.
+        automation_fields (list): The automation fields object.
+
+    Returns:
+        final_result (dict): The final result containing the fixed tables.
+        cleaned_json (dict): The cleaned JSON response from Azure Document Intelligence.
+        automation_job (AutomationJob): The automation job object.
+
+    """
+
+    def create_markdown_table(line_items):
+        # Define the headers of the table
+        headers = [
+            "QuantityReceived",
+            "QuantityBackOrdered",
+            "Description",
+            "ProductCode",
+            "Date",
+        ]
+        header_row = "| " + " | ".join(headers) + " |"
+
+        # Create the separator row
+        separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
+
+        # Initialize the markdown table with headers and separator
+        markdown_table_content = header_row + "\n" + separator_row + "\n"
+
+        # Add each line item's data to the markdown table
+        for item in line_items:
+            # Extracting the attributes for each item
+            attributes = {attr["key"]: attr["value"] for attr in item["attributes"]}
+
+            # Constructing the row with the required data
+            table_row = (
+                "| "
+                + " | ".join(
+                    [
+                        attributes.get("QuantityReceived", ""),
+                        attributes.get("QuantityBackOrdered", ""),
+                        attributes.get("Description", ""),
+                        attributes.get("ProductCode", ""),
+                        attributes.get("Date", ""),
+                    ]
+                )
+                + " |"
+            )
+            markdown_table_content += table_row + "\n"
+
+        return markdown_table_content
+
+    markdown_line_items = create_markdown_table(line_items)
+
+    cleaned_json = automation_job["cleaned_data"]
+
+    chat_instance = ChatReadRetrieveReadApproach()
+
+    new_tables = chat_instance.fix_tables(cleaned_json, markdown_line_items)
+
+    new_tables = json.loads(new_tables)
+
+    def get_first_six_rows_of_markdown_table(markdown_table):
+        """
+        Extracts and returns the first six rows of a Markdown table.
+
+        Args:
+            markdown_table (str): The Markdown table as a string.
+
+        Returns:
+            str: The first six rows of the Markdown table.
+        """
+        # Split the markdown table into rows
+        rows = markdown_table.split("\n")
+
+        # Get the first seven lines (header, separator, and first five rows of data)
+        first_six_rows = rows[:7]
+
+        # Join these lines back into a string and return
+        return "\n".join(first_six_rows)
+
+    markdown_table = new_tables["tables"][0]["markdown_table"]
+    first_six_rows = get_first_six_rows_of_markdown_table(markdown_table)
+    new_tables["tables"][0]["markdown_table"] = first_six_rows
+
+    automation_job["cleaned_data"]["analyzeResult"]["tables"] = new_tables["tables"]
+    cleaned_json["analyzeResult"]["tables"] = new_tables["tables"]
+
+    # Chunking by number of pages
+    chunks = split_data(cleaned_json)
+
+    # Process each chunk with GPT-4
+    all_chunks_data = []
+    total_tokens_used = 0
+    for chunk in chunks:
+        chunk_data, tokens_used = process_chunk(chunk, automation_fields)
+        all_chunks_data.append(chunk_data)
+        total_tokens_used += tokens_used
+
+    final_result = combine_all_chunks(all_chunks_data, automation_fields)
+
+    return final_result, cleaned_json, automation_job

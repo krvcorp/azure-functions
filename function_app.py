@@ -11,6 +11,8 @@ try:
         extraction,
         handle_line_items,
         handle_single_field,
+        delete_line_items,
+        fix_table_helper,
     )
 except:
     import requests
@@ -203,3 +205,57 @@ def run_trigger(msg: func.QueueMessage) -> None:
             else:
                 # Handle other exceptions here
                 pass
+
+
+@app.function_name(name="FixTableQueueFunc")
+@app.queue_trigger(
+    arg_name="msg",
+    queue_name="fixtable-localqueue",
+    connection="AZURE_STORAGE_CONNECTION_STRING_LOCAL",
+)
+def fix_table(msg: func.QueueMessage) -> None:
+    try:
+        import json
+
+        req = json.loads(msg.get_body().decode("utf-8"))
+
+        line_items = json.loads(req["line_items"])
+        automation_job = json.loads(req["automation_job"])
+        automation_fields = json.loads(req["automation_fields"])
+
+        final_result, cleaned_json, new_automation_job = fix_table_helper(
+            line_items, automation_job, automation_fields
+        )
+
+        result = delete_line_items(new_automation_job)
+
+        for automation_field in automation_fields:
+            if automation_field["field_type"] == "list":
+                handle_line_items(final_result, new_automation_job, automation_field)
+
+        post_backend(
+            "azureoperations/update-automation-job/",
+            {},
+            {
+                "automation_job_id": automation_job["id"],
+                "status": "completed",
+                "cleaned_data": cleaned_json,
+            },
+        )
+
+    except Exception as e:
+        if "429" in str(e):  # Check for rate limit error
+            # Update the automation job status to indicate a rate limit issue
+            post_backend(
+                "azureoperations/update-automation-job/",
+                {},
+                {
+                    "automation_job_id": automation_job["id"],
+                    "status": "openai_ratelimit",
+                    "error_message": str(e),
+                },
+            )
+        else:
+            logging.info(e)
+
+            pass
