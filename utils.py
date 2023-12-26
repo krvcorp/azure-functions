@@ -452,14 +452,12 @@ def split_data(cleaned_json, max_pages=1):
 
     for page_num, page_content in cleaned_json["analyzeResult"]["pages"].items():
         current_chunk["analyzeResult"]["content"] += page_content["content"] + " "
-        current_page_count += 1  # Increment page count
+        current_page_count += 1
 
         for table in cleaned_json["analyzeResult"]["tables"]:
             if int(page_num) in table["page_numbers"]:
                 current_chunk["analyzeResult"]["tables"].append(table)
 
-        # Assuming documents are structured in a specific way
-        # Modify this part according to your actual data structure
         for document in cleaned_json.get("analyzeResult", {}).get("documents", []):
             for field_name, field_info in document.items():
                 if field_info.get("pageNumber", 0) == int(page_num):
@@ -509,7 +507,6 @@ def process_chunk(chunk, automation_fields):
             automation_field["field_type"] == "list"
             and "sub_fields" in automation_field
         ):
-            # Process each subfield within the list
             sub_fields = [sf["field_name"] for sf in automation_field["sub_fields"]]
             sub_fields_descriptions = [
                 sf["field_description"] for sf in automation_field["sub_fields"]
@@ -536,7 +533,6 @@ def process_chunk(chunk, automation_fields):
             desired_fields.append(automation_field["field_name"])
             desired_fields_descriptions.append(automation_field["field_description"])
 
-    # If there are non-list fields to extract, process them separately
     if desired_fields:
         result, tokens_used = chat_instance.extract(
             chunk,
@@ -559,46 +555,37 @@ def process_chunk(chunk, automation_fields):
 def combine_all_chunks(chunks, automation_fields):
     combined_data = {}
 
-    # Initialize fields with default values based on their type
     for field in automation_fields:
         if field["field_type"] == "list":
             combined_data[field["field_name"]] = []
         else:
             combined_data[field["field_name"]] = ""
 
-    # Initialize a structure to hold non-list field values for each field
     field_values = {
         field["field_name"]: []
         for field in automation_fields
         if field["field_type"] != "list"
     }
 
-    # Process each chunk
     for chunk in chunks:
         for key, values in chunk.items():
             if key in combined_data and key != "LineItems":
                 if isinstance(combined_data[key], list):
-                    # Extend the list of items (for list fields other than LineItems)
                     combined_data[key].extend(values)
                 else:
-                    # Collect values for non-list fields for later processing
-                    if values:  # Ignore empty values
+                    if values:
                         field_values[key].append(values)
 
-    # Resolve contradictions in non-list fields
     for key, values in field_values.items():
-        if values:  # Ensure there are non-empty values
-            # Select the most frequent non-empty value
+        if values:
             most_frequent_value = max(set(values), key=values.count)
             combined_data[key] = most_frequent_value
 
-    # Process LineItems separately to ensure it's last
     for chunk in chunks:
         for key, values in chunk.items():
             if key == "LineItems":
                 combined_data[key].extend(values)
 
-    # Filter out completely empty rows from LineItems
     if "LineItems" in combined_data and isinstance(combined_data["LineItems"], list):
         combined_data["LineItems"] = [
             item
@@ -1041,18 +1028,23 @@ def fix_table_helper(line_items, automation_job, automation_fields):
 
         return markdown_table_content
 
+    # Clean Markdown Table for Extraction
     markdown_line_items = create_markdown_table(line_items)
 
     cleaned_json = automation_job["cleaned_data"]
 
+    chunks = split_data(cleaned_json, max_pages=1)
+
     chat_instance = ChatReadRetrieveReadApproach()
 
-    new_tables = chat_instance.fix_tables(cleaned_json, markdown_line_items)
+    new_tables = []
 
-    new_tables = json.loads(new_tables)
+    for chunk in chunks:
+        result = chat_instance.fix_tables(chunk, markdown_line_items)
+        new_tables.extend(result["tables"])
 
-    automation_job["cleaned_data"]["analyzeResult"]["tables"] = new_tables["tables"]
-    cleaned_json["analyzeResult"]["tables"] = new_tables["tables"]
+    automation_job["cleaned_data"]["analyzeResult"]["tables"] = new_tables
+    cleaned_json["analyzeResult"]["tables"] = new_tables
 
     # Chunking by number of pages
     chunks = split_data(cleaned_json)

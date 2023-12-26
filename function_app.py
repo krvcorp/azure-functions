@@ -144,7 +144,6 @@ def outlook_steps(oauth_token, last_email_indexed):
             {"last_email_indexed": last_email_indexed_to_return},
         )
 
-    # Return the email data
     return emails_to_return
 
 
@@ -191,20 +190,23 @@ def run_trigger(msg: func.QueueMessage) -> None:
                 },
             )
         except Exception as e:
-            if "429" in str(e):  # Check for rate limit error
-                # Update the automation job status to indicate a rate limit issue
+            import traceback
+
+            exc_type, exc_value, exc_traceback = traceback.sys.exc_info()
+            line_number = exc_traceback.tb_lineno
+
+            if "429" in str(e):
                 post_backend(
                     "azureoperations/update-automation-job/",
                     {},
                     {
                         "automation_job_id": automation_job["id"],
                         "status": "openai_ratelimit",
-                        "error_message": str(e),
+                        "error_message": f"{str(e)} (Line: {line_number})",
                     },
                 )
             else:
-                # Handle other exceptions here
-                pass
+                logging.info(f"Error: {str(e)} (Line: {line_number})")
 
 
 @app.function_name(name="FixTableQueueFunc")
@@ -220,8 +222,14 @@ def fix_table(msg: func.QueueMessage) -> None:
         req = json.loads(msg.get_body().decode("utf-8"))
 
         line_items = json.loads(req["line_items"])
-        automation_job = json.loads(req["automation_job"])
+        automation_job_id = req["automation_job_id"]
         automation_fields = json.loads(req["automation_fields"])
+
+        automation_job = get_backend(
+            "azureoperations/get-automation-job/",
+            {},
+            {"automation_job_id": automation_job_id},
+        )
 
         final_result, cleaned_json, new_automation_job = fix_table_helper(
             line_items, automation_job, automation_fields
@@ -244,18 +252,20 @@ def fix_table(msg: func.QueueMessage) -> None:
         )
 
     except Exception as e:
-        if "429" in str(e):  # Check for rate limit error
-            # Update the automation job status to indicate a rate limit issue
+        import traceback
+
+        exc_type, exc_value, exc_traceback = traceback.sys.exc_info()
+        line_number = exc_traceback.tb_lineno
+
+        if "429" in str(e):
             post_backend(
                 "azureoperations/update-automation-job/",
                 {},
                 {
                     "automation_job_id": automation_job["id"],
                     "status": "openai_ratelimit",
-                    "error_message": str(e),
+                    "error_message": f"{str(e)} (Line: {line_number})",
                 },
             )
         else:
-            logging.info(e)
-
-            pass
+            logging.info(f"Error: {str(e)} (Line: {line_number})")
