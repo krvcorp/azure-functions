@@ -2,10 +2,14 @@ try:
     import requests
     import logging
     import json
+    import openai
+    import os
 except:
     import requests
     import logging
     import json
+    import openai
+    import os
 
 
 def get_backend(url, headers, params):
@@ -441,7 +445,7 @@ def delete_line_items(automation_job):
     return result
 
 
-def split_data(cleaned_json, max_pages=3):
+def split_data(cleaned_json, max_pages=1):
     chunks = []
     current_chunk = {"analyzeResult": {"content": "", "tables": [], "documents": []}}
     current_page_count = 0
@@ -546,6 +550,9 @@ def process_chunk(chunk, automation_fields):
         for key, value in result_data.items():
             chunk_data[key] = value
 
+    logging.info("Chunk data")
+    logging.info(chunk_data)
+
     return chunk_data, total_tokens_used
 
 
@@ -603,11 +610,10 @@ def combine_all_chunks(chunks, automation_fields):
 
 
 class ChatReadRetrieveReadApproach:
-    # Chat roles
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
-    MAX_TOKENS = 4096 - 100
+    MAX_TOKENS = 4096 - 1024
 
     NO_RESPONSE = "0"
 
@@ -619,43 +625,10 @@ class ChatReadRetrieveReadApproach:
         self.chatgpt_model = chatgpt_model
         self.chatgpt_token_limit = chatgpt_token_limit
 
-    def get_search_query(self, chat_completion: dict[str, any], user_query: str):
-        """
-        Retrieves the search query from the chat completion response.
-
-        Args:
-            chat_completion (dict[str, any]): The chat completion response.
-            user_query (str): The original user query.
-
-        Returns:
-            str: The search query extracted from the chat completion response, or the original user query if no search query is found.
-        """
-        import json
-
-        response_message = chat_completion["choices"][0]["message"]
-        if function_call := response_message.get("function_call"):
-            if function_call["name"] == "search_sources":
-                arg = json.loads(function_call["arguments"])
-                search_query = arg.get("search_query", self.NO_RESPONSE)
-                if search_query != self.NO_RESPONSE:
-                    return search_query
-        elif query_text := response_message.get("content"):
-            if query_text.strip() != self.NO_RESPONSE:
-                return query_text
-        return user_query
-
-    system_message_extract = """
-    You are a sophisticated data extraction assistant specializing in processing JSON documents received from the Azure Document Intelligence API. Your task involves the following steps:
-
-    1. Analyze the provided JSON document carefully. Tables of information are provided in markdown format.
-    2. Identify and extract data corresponding to a predefined list of user-requested fields. These fields are specified along with their descriptions, which may include variations and specific formatting requirements.
-    3. Respect the order of the fields as provided in the user request. This order is crucial for the correct organization of the extracted data.
-    4. For each field, apply any specified formatting rules diligently. This may include date formats (e.g., MM/DD/YYYY), numerical representations (e.g., decimal places), and specific text patterns.
-    5. If a particular field's data cannot be found in the JSON document, respond with an empty string for that field to maintain the structure of the output.
-    6. Compile the extracted data and present it in a structured JSON format, adhering to the sequence of the requested fields.
-
-    Your response must be exclusively in JSON format, ensuring it is precise, well-structured, and aligns with the user's extraction and formatting criteria. Focus on accuracy and clarity in the representation of the extracted data.
-    """
+        openai.api_key = os.environ["AZURE_OPENAI_API_KEY"]
+        openai.api_base = os.environ["AZURE_OPENAI_ENDPOINT"]
+        openai.api_type = "azure"
+        openai.api_version = "2023-05-15"
 
     def extract(
         self, document, desired_fields, desired_fields_descriptions=[], line_items=False
@@ -674,7 +647,6 @@ class ChatReadRetrieveReadApproach:
         - tokens_used (int): The number of tokens used to generate the response.
         """
 
-        # Additional instruction for line items, added only if descriptions are provided
         line_items_instruction = (
             "\n7. The features are columns for an array named 'LineItems'. "
             "These dictionary values must fill an array for the 'LineItems' key, which must be returned."
@@ -682,7 +654,6 @@ class ChatReadRetrieveReadApproach:
             else ""
         )
 
-        # Construct the system message extract with the conditional instruction
         system_message_extract = (
             """
             You are a sophisticated data extraction assistant specializing in processing JSON documents received from the Azure Document Intelligence API. You are also given a list of fields a user requests. Your task involves the following steps:
@@ -695,27 +666,8 @@ class ChatReadRetrieveReadApproach:
             6. You will compile the extracted data and present it in a structured JSON format, adhering to the sequence of the requested fields."""
             + line_items_instruction
             + """
-
-            Your response must be exclusively in JSON format.
+            7. Your response must be exclusively in JSON format.
             """
-        )
-
-        import json
-        import openai
-        import os
-
-        openai.api_key = os.environ["AZURE_OPENAI_API_KEY"]
-        openai.api_base = os.environ["AZURE_OPENAI_ENDPOINT"]
-        openai.api_type = "azure"
-        openai.api_version = "2023-05-15"
-
-        messages = []
-
-        messages.append(
-            {
-                "role": self.SYSTEM,
-                "content": f"{system_message_extract}",
-            }
         )
 
         fields_with_descriptions = [
@@ -723,7 +675,6 @@ class ChatReadRetrieveReadApproach:
             for field, description in zip(desired_fields, desired_fields_descriptions)
         ]
 
-        # Adding an additional newline between each field and its description
         fields_descriptions_joined = "\n\n".join(fields_with_descriptions)
 
         fields_content = (
@@ -732,27 +683,87 @@ class ChatReadRetrieveReadApproach:
             + '"""\n\n'
             + "Fields and Descriptions"
             + ':\n\n"""'
-            + fields_descriptions_joined  # Using the modified joined string
-            + '"""\n\n'
-            + self.system_message_extract
+            + fields_descriptions_joined
         )
 
+        messages = []
+        messages.append(
+            {
+                "role": self.SYSTEM,
+                "content": f"{system_message_extract}",
+            }
+        )
         messages.append({"role": self.USER, "content": fields_content})
 
-        chat_completion = openai.ChatCompletion.create(
-            engine=self.chatgpt_model,
-            response_format={"type": "json_object"},
-            messages=messages,
-            max_tokens=self.chatgpt_token_limit,
-            temperature=0.0,
-        )
+        total_response = ""
+        total_tokens_used = 0
 
-        result = chat_completion.choices[0].message["content"].strip()
+        first_iteration = True
 
-        tokens_used = num_tokens_from_messages(messages, model=self.chatgpt_model)
-        tokens_used += self.chatgpt_token_limit
+        while True:
+            if first_iteration:
+                chat_completion = openai.ChatCompletion.create(
+                    engine=self.chatgpt_model,
+                    response_format={"type": "json_object"},
+                    messages=messages,
+                    max_tokens=self.chatgpt_token_limit,
+                    temperature=0.0,
+                )
+                first_iteration = False
+            else:
+                chat_completion = openai.ChatCompletion.create(
+                    engine=self.chatgpt_model,
+                    messages=messages,
+                    max_tokens=self.chatgpt_token_limit,
+                    temperature=0.0,
+                )
 
-        return result, tokens_used
+            response_content = chat_completion.choices[0].message["content"].strip()
+
+            tokens_used_output = num_tokens_from_response(
+                response_content, model=self.chatgpt_model
+            )
+            total_tokens_used += tokens_used_output
+
+            if chat_completion.choices[0].finish_reason == "length":
+                valid_json_content = extract_valid_json(response_content)
+
+                logging.info(
+                    "Valid JSON Response:\n\n" + valid_json_content + "\n\n------"
+                )
+
+                total_response += valid_json_content
+                continuation_context = extract_continuation_context(valid_json_content)
+
+                continuation_prompt = """
+                    You will continue the extraction from exactly where it ends from your earlier response. Here are your instructions:
+                    
+                    1. You will respond only as a string. 
+                    2. You will ensure your entire response can be string-appended directly to the context which will be parsed into JSON. 
+                    3. You will continue the extraction at the appropriate place in the document. 
+                    4. You will understand that the last item that was extracted should be the last item in the context, which isn't the last item in the document.
+                    """
+
+                messages = [
+                    {"role": self.SYSTEM, "content": system_message_extract},
+                    {
+                        "role": self.USER,
+                        "content": fields_content,
+                    },
+                    {
+                        "role": self.ASSISTANT,
+                        "content": continuation_context,
+                    },
+                    {
+                        "role": self.USER,
+                        "content": continuation_prompt,
+                    },
+                ]
+            else:
+                total_response += response_content
+                break
+
+        return total_response, total_tokens_used
 
     def fix_tables(self, document, markdown_line_items):
         """
@@ -768,22 +779,32 @@ class ChatReadRetrieveReadApproach:
         """
 
         system_message_fix_tables = """
-        You are a sophisticated data extraction assistant.
-        You are provided a JSON document with tables in markdown format. The cells are separated by a pipe (|) and the rows are separated by a new line.
-        However, some of the tables are not well formed. Errors include cells being merged, rows being merged, and cells being split.
-        You are provided a sample markdown table with 2 well formed rows. Your task is to fix all of the tables in the JSON document.
-        Use only the headers from the provided markdown table in the new tables
-        Return a JSON document with only the key 'tables' and only the value being an array of tables in the original JSON format.
+        You are an advanced data correction assistant. Your task is to reformat incorrectly structured markdown tables within a JSON document. The user will provide this document, along with a sample of fixed rows demonstrating the correct table format. The tables in the document have various formatting errors, such as merged cells, improperly combined rows, and incorrectly split cells.
+
+        Here are your specific instructions:
+        1. Receive and analyze the JSON document provided by the user. This document contains markdown tables with formatting errors.
+        2. Examine the sample of fixed rows also provided by the user. Use these rows as a reference for the correct format of the tables.
+        3. Identify and rectify any formatting errors in the tables from the JSON document. This includes unmerging cells, separating combined rows, and correcting split cells.
+        4. Ensure that the corrected tables use only the headers from the user-provided sample of fixed rows.
+        5. Generate a new JSON document. Your response must be exclusively in the following JSON format.
+        {
+            \"tables\": [
+                {
+                    \"page_numbers\": [1],
+                    \"markdown_table\": \"| Fixture Type / Item No. | ...\"
+                },
+                ...
+            ]
+        }
         """
 
-        import json
-        import openai
-        import os
-
-        openai.api_key = os.environ["AZURE_OPENAI_API_KEY"]
-        openai.api_base = os.environ["AZURE_OPENAI_ENDPOINT"]
-        openai.api_type = "azure"
-        openai.api_version = "2023-05-15"
+        user_message_content = (
+            'Document content:\n\n"""'
+            + json.dumps(document, indent=4)
+            + '"""\n\n'
+            + "Fixed Rows:\n\n"
+            "" + markdown_line_items + '"""'
+        )
 
         messages = []
 
@@ -794,30 +815,100 @@ class ChatReadRetrieveReadApproach:
             }
         )
 
-        fields_content = (
-            'Document content:\n\n"""'
-            + json.dumps(document, indent=4)
-            + '"""\n\n'
-            + "Fixed Rows"
-            + ':\n\n"""'
-            + markdown_line_items
-            + '"""\n\n'
-            + system_message_fix_tables
-        )
+        messages.append({"role": self.USER, "content": user_message_content})
 
-        messages.append({"role": self.USER, "content": fields_content})
+        total_response = ""
+        total_tokens_used = 0
 
-        chat_completion = openai.ChatCompletion.create(
-            engine=self.chatgpt_model,
-            response_format={"type": "json_object"},
-            messages=messages,
-            max_tokens=self.chatgpt_token_limit,
-            temperature=0.0,
-        )
+        first_iteration = True
 
-        result = chat_completion.choices[0].message["content"].strip()
+        while True:
+            if first_iteration:
+                chat_completion = openai.ChatCompletion.create(
+                    engine=self.chatgpt_model,
+                    response_format={"type": "json_object"},
+                    messages=messages,
+                    max_tokens=self.chatgpt_token_limit,
+                    temperature=0.0,
+                )
+                first_iteration = False
+            else:
+                chat_completion = openai.ChatCompletion.create(
+                    engine=self.chatgpt_model,
+                    messages=messages,
+                    max_tokens=self.chatgpt_token_limit,
+                    temperature=0.0,
+                )
 
-        return result
+            response_content = chat_completion.choices[0].message["content"].strip()
+
+            tokens_used_output = num_tokens_from_response(
+                response_content, model=self.chatgpt_model
+            )
+            total_tokens_used += tokens_used_output
+
+            if chat_completion.choices[0].finish_reason == "length":
+                # Use the helper method to extract valid JSON portion
+                valid_json_content = extract_valid_json(response_content)
+
+                total_response += valid_json_content
+                continuation_context = extract_continuation_context(valid_json_content)
+
+                continuation_prompt = """
+                    You will continue the extraction from exactly where it ends from your earlier response. Here are your instructions:
+                    
+                    1. You will respond only as a string. 
+                    2. You will ensure your entire response can be string-appended directly to the context which will be parsed into JSON. 
+                    3. You will continue the extraction at the appropriate place in the document. 
+                    4. You will understand that the last item that was extracted should be the last item in the context, which isn't the last item in the document.
+                    """
+
+                messages = [
+                    {"role": self.SYSTEM, "content": system_message_fix_tables},
+                    {
+                        "role": self.USER,
+                        "content": user_message_content,
+                    },
+                    {
+                        "role": self.ASSISTANT,
+                        "content": continuation_context,
+                    },
+                    {
+                        "role": self.USER,
+                        "content": continuation_prompt,
+                    },
+                ]
+            else:
+                total_response += response_content
+                break
+
+        return total_response
+
+
+def extract_continuation_context(
+    response, initial_context_length=256, final_context_length=1024
+):
+    """
+    Extracts portions of the response to use as context for the next request.
+    It takes the first 'initial_context_length' characters and the last 'final_context_length' characters of the response.
+
+    Args:
+    - response (str): The response text from which to extract context.
+    - initial_context_length (int): Number of characters to extract from the start of the response.
+    - final_context_length (int): Number of characters to extract from the end of the response.
+
+    Returns:
+    - str: Extracted context from the response.
+    """
+    if len(response) <= initial_context_length + final_context_length:
+        # If the response is short enough, return it in full
+        return response
+
+    start_context = response[:initial_context_length]
+    end_context = response[-final_context_length:]
+    omitted_section_notice = "\n[...]\n\n[Content Omitted for Brevity]\n\n[...]\n"
+
+    return f"{start_context}{omitted_section_notice}{end_context}"
 
 
 def num_tokens_from_messages(messages, model="gpt-4"):
@@ -870,6 +961,28 @@ def num_tokens_from_messages(messages, model="gpt-4"):
                 num_tokens += tokens_per_name
     num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
     return num_tokens
+
+
+def num_tokens_from_response(response, model):
+    """
+    Calculates the number of tokens in the ChatGPT response.
+
+    Args:
+        response (str): The response text from ChatGPT.
+        model (str): The name of the GPT model to use for tokenization.
+
+    Returns:
+        int: The number of tokens in the response.
+    """
+    import tiktoken
+
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        print("Warning: model not found. Using cl100k_base encoding.")
+        encoding = tiktoken.get_encoding("cl100k_base")
+
+    return len(encoding.encode(response))
 
 
 def fix_table_helper(line_items, automation_job, automation_fields):
@@ -938,29 +1051,6 @@ def fix_table_helper(line_items, automation_job, automation_fields):
 
     new_tables = json.loads(new_tables)
 
-    def get_first_six_rows_of_markdown_table(markdown_table):
-        """
-        Extracts and returns the first six rows of a Markdown table.
-
-        Args:
-            markdown_table (str): The Markdown table as a string.
-
-        Returns:
-            str: The first six rows of the Markdown table.
-        """
-        # Split the markdown table into rows
-        rows = markdown_table.split("\n")
-
-        # Get the first seven lines (header, separator, and first five rows of data)
-        first_six_rows = rows[:7]
-
-        # Join these lines back into a string and return
-        return "\n".join(first_six_rows)
-
-    markdown_table = new_tables["tables"][0]["markdown_table"]
-    first_six_rows = get_first_six_rows_of_markdown_table(markdown_table)
-    new_tables["tables"][0]["markdown_table"] = first_six_rows
-
     automation_job["cleaned_data"]["analyzeResult"]["tables"] = new_tables["tables"]
     cleaned_json["analyzeResult"]["tables"] = new_tables["tables"]
 
@@ -975,6 +1065,20 @@ def fix_table_helper(line_items, automation_job, automation_fields):
         all_chunks_data.append(chunk_data)
         total_tokens_used += tokens_used
 
+    logging.info("Processing done")
+
     final_result = combine_all_chunks(all_chunks_data, automation_fields)
 
     return final_result, cleaned_json, automation_job
+
+
+def extract_valid_json(json_string):
+    try:
+        # Try to load the JSON to check if it's well-formed
+        json.loads(json_string)
+        return json_string
+    except json.JSONDecodeError as e:
+        # If there's a JSONDecodeError, find the first malformed part
+        malformed_index = e.pos
+        # Return the valid JSON string up to the first malformed part
+        return json_string[:malformed_index]
