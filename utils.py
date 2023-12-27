@@ -546,9 +546,6 @@ def process_chunk(chunk, automation_fields):
         for key, value in result_data.items():
             chunk_data[key] = value
 
-    logging.info("Chunk data")
-    logging.info(chunk_data)
-
     return chunk_data, total_tokens_used
 
 
@@ -1040,7 +1037,7 @@ def fix_table_helper(line_items, automation_job, automation_fields):
     new_tables = []
 
     for chunk in chunks:
-        result = chat_instance.fix_tables(chunk, markdown_line_items)
+        result = json.loads(chat_instance.fix_tables(chunk, markdown_line_items))
         new_tables.extend(result["tables"])
 
     automation_job["cleaned_data"]["analyzeResult"]["tables"] = new_tables
@@ -1057,8 +1054,6 @@ def fix_table_helper(line_items, automation_job, automation_fields):
         all_chunks_data.append(chunk_data)
         total_tokens_used += tokens_used
 
-    logging.info("Processing done")
-
     final_result = combine_all_chunks(all_chunks_data, automation_fields)
 
     return final_result, cleaned_json, automation_job
@@ -1066,11 +1061,8 @@ def fix_table_helper(line_items, automation_job, automation_fields):
 
 def extract_valid_json(json_string):
     try:
-        # Try to load the JSON to check if it's well-formed
         json.loads(json_string)
         return json_string
     except json.JSONDecodeError as e:
-        # If there's a JSONDecodeError, find the first malformed part
         malformed_index = e.pos
-        # Return the valid JSON string up to the first malformed part
         return json_string[:malformed_index]
