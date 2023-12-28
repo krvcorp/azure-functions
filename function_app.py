@@ -150,8 +150,8 @@ def outlook_steps(oauth_token, last_email_indexed):
 @app.function_name(name="QueueFunc")
 @app.queue_trigger(
     arg_name="msg",
-    queue_name="localqueue",
-    connection="AZURE_STORAGE_CONNECTION_STRING_LOCAL",
+    queue_name="sullymac-main",
+    connection="AZURE_STORAGE_CONNECTION_STRING_QUEUE",
 )
 def run_trigger(msg: func.QueueMessage) -> None:
     import json
@@ -212,8 +212,8 @@ def run_trigger(msg: func.QueueMessage) -> None:
 @app.function_name(name="FixTableQueueFunc")
 @app.queue_trigger(
     arg_name="msg",
-    queue_name="fixtable-localqueue",
-    connection="AZURE_STORAGE_CONNECTION_STRING_LOCAL",
+    queue_name="sullymac-fixtable",
+    connection="AZURE_STORAGE_CONNECTION_STRING_QUEUE",
 )
 def fix_table(msg: func.QueueMessage) -> None:
     try:
