@@ -597,7 +597,7 @@ class ChatReadRetrieveReadApproach:
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
-    MAX_TOKENS = 4096 - 1024
+    MAX_TOKENS = 4096 - 256
 
     NO_RESPONSE = "0"
 
@@ -650,7 +650,6 @@ class ChatReadRetrieveReadApproach:
             6. You will compile the extracted data and present it in a structured JSON format, adhering to the sequence of the requested fields."""
             + line_items_instruction
             + """
-            7. Your response must be exclusively in JSON format.
             """
         )
 
@@ -679,6 +678,7 @@ class ChatReadRetrieveReadApproach:
         )
         messages.append({"role": self.USER, "content": fields_content})
 
+        response_content = ""
         total_response = ""
         total_tokens_used = 0
 
@@ -693,6 +693,8 @@ class ChatReadRetrieveReadApproach:
                     max_tokens=self.chatgpt_token_limit,
                     temperature=0.0,
                 )
+                response_content = chat_completion.choices[0].message["content"].strip()
+                response_content = extract_valid_json(response_content)
                 first_iteration = False
             else:
                 chat_completion = openai.ChatCompletion.create(
@@ -701,52 +703,38 @@ class ChatReadRetrieveReadApproach:
                     max_tokens=self.chatgpt_token_limit,
                     temperature=0.0,
                 )
+                response_content = chat_completion.choices[0].message["content"].strip()
 
-            response_content = chat_completion.choices[0].message["content"].strip()
-
+            # Token tracking
             tokens_used_output = num_tokens_from_response(
                 response_content, model=self.chatgpt_model
             )
             total_tokens_used += tokens_used_output
 
             if chat_completion.choices[0].finish_reason == "length":
-                valid_json_content = extract_valid_json(response_content)
-
-                logging.info(
-                    "Valid JSON Response:\n\n" + valid_json_content + "\n\n------"
-                )
-
-                total_response += valid_json_content
-                continuation_context = extract_continuation_context(valid_json_content)
+                total_response += remove_overlap(total_response, response_content)
+                continuation_context = extract_continuation_context(response_content)
 
                 continuation_prompt = """
-                    You will continue the extraction from exactly where it ends from your earlier response. Here are your instructions:
+                    You are a data extraction assistant. The continuation context provided is an earlier response you made while you were extracting data; however, your response was too long and you were unable to complete the extraction. You MUST continue the extraction. Here are your exact instructions:
                     
-                    1. You will respond only as a string. 
-                    2. You will ensure your entire response can be string-appended directly to the context which will be parsed into JSON. 
-                    3. You will continue the extraction at the appropriate place in the document. 
-                    4. You will understand that the last item that was extracted should be the last item in the context, which isn't the last item in the document.
+                    1. You will respond only as a string
+                    2. You will include the last 10 characters from the continuation context.
                     """
 
                 messages = [
-                    {"role": self.SYSTEM, "content": system_message_extract},
+                    {"role": self.SYSTEM, "content": system_message_extract + "\n\n" + continuation_prompt},
                     {
                         "role": self.USER,
-                        "content": fields_content,
-                    },
-                    {
-                        "role": self.ASSISTANT,
-                        "content": continuation_context,
-                    },
-                    {
-                        "role": self.USER,
-                        "content": continuation_prompt,
+                        "content": fields_content + "\n\n" + continuation_context,
                     },
                 ]
-            else:
-                total_response += response_content
-                break
 
+            else:
+                total_response += remove_overlap(total_response, response_content)
+                break
+        
+        logging.info(f"Extracted data: {total_response}")
         return total_response, total_tokens_used
 
     def fix_tables(self, document, markdown_line_items):
@@ -780,6 +768,7 @@ class ChatReadRetrieveReadApproach:
                 ...
             ]
         }
+        6. Obey user instructions.
         """
 
         user_message_content = (
@@ -801,6 +790,7 @@ class ChatReadRetrieveReadApproach:
 
         messages.append({"role": self.USER, "content": user_message_content})
 
+        response_content = ""
         total_response = ""
         total_tokens_used = 0
 
@@ -815,6 +805,8 @@ class ChatReadRetrieveReadApproach:
                     max_tokens=self.chatgpt_token_limit,
                     temperature=0.0,
                 )
+                response_content = chat_completion.choices[0].message["content"].strip()
+                response_content = extract_valid_json(response_content)
                 first_iteration = False
             else:
                 chat_completion = openai.ChatCompletion.create(
@@ -823,51 +815,38 @@ class ChatReadRetrieveReadApproach:
                     max_tokens=self.chatgpt_token_limit,
                     temperature=0.0,
                 )
+                response_content = chat_completion.choices[0].message["content"].strip()
 
-            response_content = chat_completion.choices[0].message["content"].strip()
-
+            # Token tracking
             tokens_used_output = num_tokens_from_response(
                 response_content, model=self.chatgpt_model
             )
             total_tokens_used += tokens_used_output
 
             if chat_completion.choices[0].finish_reason == "length":
-                # Use the helper method to extract valid JSON portion
-                valid_json_content = extract_valid_json(response_content)
-
-                total_response += valid_json_content
-                continuation_context = extract_continuation_context(valid_json_content)
+                total_response += remove_overlap(total_response, response_content)
+                continuation_context = extract_continuation_context(response_content)
 
                 continuation_prompt = """
-                    You will continue the extraction from exactly where it ends from your earlier response. Here are your instructions:
+                    You are a data extraction assistant. The continuation context provided is an earlier response you made while you were cleaning data; however, your response was too long and you were unable to complete the extraction. You MUST continue the cleaning. Here are your exact instructions:
                     
-                    1. You will respond only as a string. 
-                    2. You will ensure your entire response can be string-appended directly to the context which will be parsed into JSON. 
-                    3. You will continue the extraction at the appropriate place in the document. 
-                    4. You will understand that the last item that was extracted should be the last item in the context, which isn't the last item in the document.
+                    1. You will respond only as a string
+                    2. You will include the last 10 characters from the continuation context.
                     """
 
                 messages = [
-                    {"role": self.SYSTEM, "content": system_message_fix_tables},
+                    {"role": self.SYSTEM, "content": system_message_fix_tables + "\n\n" + continuation_prompt},
                     {
                         "role": self.USER,
-                        "content": user_message_content,
-                    },
-                    {
-                        "role": self.ASSISTANT,
-                        "content": continuation_context,
-                    },
-                    {
-                        "role": self.USER,
-                        "content": continuation_prompt,
+                        "content": user_message_content + "\n\n" + continuation_context,
                     },
                 ]
+
             else:
-                total_response += response_content
+                total_response += remove_overlap(total_response, response_content)
                 break
 
         return total_response
-
 
 def extract_continuation_context(
     response, initial_context_length=256, final_context_length=1024
@@ -986,46 +965,32 @@ def fix_table_helper(line_items, automation_job, automation_fields):
     """
 
     def create_markdown_table(line_items):
-        # Define the headers of the table
-        headers = [
-            "QuantityReceived",
-            "QuantityBackOrdered",
-            "Description",
-            "ProductCode",
-            "Date",
-        ]
+        headers = set()
+        for item in line_items:
+            for attr in item["attributes"]:
+                headers.add(attr["key"])
+        headers = sorted(list(headers))
+
         header_row = "| " + " | ".join(headers) + " |"
 
-        # Create the separator row
         separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
 
-        # Initialize the markdown table with headers and separator
         markdown_table_content = header_row + "\n" + separator_row + "\n"
 
-        # Add each line item's data to the markdown table
         for item in line_items:
-            # Extracting the attributes for each item
             attributes = {attr["key"]: attr["value"] for attr in item["attributes"]}
 
-            # Constructing the row with the required data
             table_row = (
-                "| "
-                + " | ".join(
-                    [
-                        attributes.get("QuantityReceived", ""),
-                        attributes.get("QuantityBackOrdered", ""),
-                        attributes.get("Description", ""),
-                        attributes.get("ProductCode", ""),
-                        attributes.get("Date", ""),
-                    ]
-                )
-                + " |"
+                "| " +
+                " | ".join(
+                    [attributes.get(header, "") for header in headers]
+                ) +
+                " |"
             )
             markdown_table_content += table_row + "\n"
 
         return markdown_table_content
 
-    # Clean Markdown Table for Extraction
     markdown_line_items = create_markdown_table(line_items)
 
     cleaned_json = automation_job["cleaned_data"]
@@ -1043,10 +1008,8 @@ def fix_table_helper(line_items, automation_job, automation_fields):
     automation_job["cleaned_data"]["analyzeResult"]["tables"] = new_tables
     cleaned_json["analyzeResult"]["tables"] = new_tables
 
-    # Chunking by number of pages
     chunks = split_data(cleaned_json)
 
-    # Process each chunk with GPT-4
     all_chunks_data = []
     total_tokens_used = 0
     for chunk in chunks:
@@ -1066,3 +1029,14 @@ def extract_valid_json(json_string):
     except json.JSONDecodeError as e:
         malformed_index = e.pos
         return json_string[:malformed_index]
+
+def remove_overlap(prev_response, new_response, overlap_size=100):
+    # The overlap_size can be adjusted based on the expected size of the overlap
+    overlap_length = min(len(prev_response), overlap_size)
+
+    # logging.info("Prev Response:\n\n" + prev_response + "\n\n------" + "New Response:\n\n" + new_response + "\n\n------")
+
+    for i in range(overlap_length, 0, -1):
+        if prev_response[-i:] == new_response[:i]:
+            return new_response[i:]  # Remove the overlapping part
+    return new_response

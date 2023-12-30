@@ -206,7 +206,7 @@ def run_trigger(msg: func.QueueMessage) -> None:
                     },
                 )
             else:
-                logging.info(f"Error: {str(e)} (Line: {line_number})")
+                logging.info(f"Error: {traceback.format_exc()}")
 
 
 @app.function_name(name="FixTableQueueFunc")
@@ -268,4 +268,4 @@ def fix_table(msg: func.QueueMessage) -> None:
                 },
             )
         else:
-            logging.info(f"Error: {str(e)} (Line: {line_number})")
+            logging.info(f"Error: {traceback.format_exc()}")
